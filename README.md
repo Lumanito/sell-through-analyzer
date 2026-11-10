@@ -17,13 +17,14 @@ Cet outil le fait automatiquement à partir d'un simple export CSV des ventes et
 | Étape | Détail |
 |---|---|
 | **Données** | Jeu fictif réaliste : 40 références (vestes, bottes, polaires, accessoires), 25 points de vente dans 8 villes, 12 semaines, tailles et couleurs. Best-sellers, références qui stagnent, ruptures de tailles centrales et saisonnalité (pic de froid en semaine 9). |
-| **Import** | Chargement de son propre CSV au même format ([modèle vide](data/template.csv)), avec contrôle des colonnes et des valeurs. |
+| **Import intelligent** | CSV ou Excel **au format libre** : l'outil trouve la ligne d'en-tête, ignore titres et totaux, reconnaît les colonnes (« Magasin », « Sell-out », « PA HT »...), convertit dates, nombres au format français et prix en euros, et recalcule le stock ou le livré s'ils manquent. L'utilisateur valide la correspondance ; l'IA peut la proposer. |
 | **KPIs** | Sell-through par référence, point de vente et catégorie ; semaines de couverture ; ruptures ; top et flop 10 ; CA de gros. |
 | **Règles** | Transferts entre points de vente, réassorts, démarques, alertes de rupture de taille. Seuils réglables dans l'interface. |
 | **Synthèse IA** | Les KPIs agrégés (jamais les données brutes) sont envoyés à l'API Claude, qui rédige une note : constats, 5 actions prioritaires, risques. Sans clé API, tout le reste fonctionne. |
 | **Interface** | Application Streamlit avec filtres (catégorie, type de point de vente, ville), graphiques interactifs, exports CSV, rapport en Markdown ou PDF. |
 
 ![Top et flop des références](docs/screenshots/references.png)
+![Import d'un Excel désordonné](docs/screenshots/import.png)
 ![Recommandations](docs/screenshots/recommandations.png)
 
 ## Méthode de calcul des KPIs
@@ -48,21 +49,31 @@ Elles sont appliquées dans cet ordre : on mobilise le stock déjà présent dan
 
 Tous les seuils sont dans [`src/config.py`](src/config.py) et modifiables depuis la barre latérale.
 
+## Import d'un fichier imparfait
+
+1. **Lecture** : CSV (séparateur deviné) ou Excel. La ligne d'en-tête est celle qui contient le plus de libellés parmi les 15 premières ; lignes vides et lignes « Total » sont retirées.
+2. **Correspondance des colonnes** : proposée par une liste de synonymes (français et anglais), ou par l'IA, qui ne reçoit que les noms de colonnes et 5 lignes d'exemple. L'utilisateur corrige si besoin.
+3. **Conversion par le code** : « S12 » ou une date deviennent un numéro de semaine, « 1 234,50 € » devient 1234.5, les doublons sont additionnés. Stock manquant = livré cumulé − vendu cumulé ; livré manquant = vendu total + stock final.
+4. **Hypothèses affichées** : chaque valeur par défaut utilisée est signalée à l'écran.
+
+Indispensable : point de vente, référence, quantité vendue, et la quantité livrée **ou** le stock. Un [exemple d'export désordonné](data/exemple_export_desordonne.xlsx) est fourni pour tester.
+
 ## Stack technique
 
-Python 3.11 · pandas · Streamlit · Plotly · SDK `anthropic` (API Claude) · fpdf2 (PDF) · pytest
+Python 3.11 · pandas · Streamlit · Plotly · SDK `anthropic` (API Claude) · fpdf2 (PDF) · openpyxl (Excel) · pytest
 
 ```
 ├── app.py              interface Streamlit
 ├── src/
 │   ├── config.py       format des données et seuils des règles
-│   ├── data.py         génération du jeu fictif et import CSV
+│   ├── data.py         génération du jeu fictif et lecture du format modèle
+│   ├── mapping.py      import d'un CSV / Excel au format libre
 │   ├── kpis.py         calcul des KPIs
 │   ├── rules.py        recommandations par règles
 │   ├── ai_report.py    synthèse via l'API Claude
 │   └── export.py       rapport Markdown et PDF
-├── data/               jeu fictif + modèle CSV vide
-└── tests/              tests pytest des KPIs et des règles
+├── data/               jeu fictif, modèle CSV vide, exemple d'export désordonné
+└── tests/              tests pytest des KPIs, des règles et de l'import
 ```
 
 ## Lancer le projet en local
@@ -78,7 +89,7 @@ streamlit run app.py               # ouvre http://localhost:8501
 pytest                             # lance les tests
 ```
 
-**Synthèse IA (optionnelle)** : copier `.env.example` en `.env` et y coller une clé API Anthropic (`ANTHROPIC_API_KEY=...`). Le fichier `.env` est exclu de Git.
+**IA (optionnelle)** : copier `.env.example` en `.env`, y coller une clé API Anthropic (`ANTHROPIC_API_KEY=...`) et fixer le nombre d'appels autorisés par jour (`LIMITE_APPELS_IA_PAR_JOUR`, 0 par défaut = IA désactivée). Le fichier `.env` est exclu de Git.
 
 Pour régénérer le jeu de données fictif : `python -m src.data`.
 
@@ -87,6 +98,7 @@ Pour régénérer le jeu de données fictif : `python -m src.data`.
 - Données simulées : les règles n'ont pas été calibrées sur un historique réel.
 - Les réassorts sont calculés au niveau référence × point de vente, pas taille par taille.
 - Pas de prise en compte des minimums de commande, des délais de production ou des coûts de transport.
+- L'import ne gère pas encore les fichiers « en largeur » (une colonne par semaine).
 - La note IA reformule des chiffres calculés par le code. Elle doit être relue avant d'être diffusée.
 
 ---
@@ -103,7 +115,8 @@ This tool automates it from a plain CSV sales export and drafts a summary memo f
 
 ### What it does
 
-- **Data**: realistic fictitious dataset (40 styles × colours, 25 doors in 8 cities, 12 weeks, sizes) with best-sellers, slow sellers, core-size stock-outs and seasonality. Users can also upload their own CSV using the [empty template](data/template.csv).
+- **Data**: realistic fictitious dataset (40 styles × colours, 25 doors in 8 cities, 12 weeks, sizes) with best-sellers, slow sellers, core-size stock-outs and seasonality.
+- **Smart import**: CSV or Excel files in **any layout**. The tool finds the header row, drops titles and total rows, matches columns through synonyms or the AI (which only sees column names and 5 sample rows), converts dates, French-formatted numbers and prices, and rebuilds missing stock or delivered quantities. The user confirms the mapping; every assumption is shown on screen.
 - **KPIs**: sell-through by style, door and category; weeks of cover; stock-outs; top and bottom 10; wholesale revenue.
 - **Rule-based recommendations**: inter-store transfers, replenishment, markdowns, size-break alerts. All thresholds can be tuned in the sidebar.
 - **AI summary**: only aggregated KPIs (never raw data) are sent to the Claude API, which writes a memo in French: findings, 5 priority actions, risks. Without an API key, everything else still works.
@@ -138,12 +151,12 @@ streamlit run app.py
 pytest
 ```
 
-Optional AI summary: copy `.env.example` to `.env` and add your Anthropic API key. `.env` is git-ignored.
+Optional AI features: copy `.env.example` to `.env`, add your Anthropic API key and set the daily call limit (`LIMITE_APPELS_IA_PAR_JOUR`, 0 by default = AI disabled). `.env` is git-ignored.
 
 ### Stack
 
-Python 3.11 · pandas · Streamlit · Plotly · `anthropic` SDK (Claude API) · fpdf2 · pytest
+Python 3.11 · pandas · Streamlit · Plotly · `anthropic` SDK (Claude API) · fpdf2 · openpyxl · pytest
 
 ### Limitations
 
-Simulated data; replenishment computed per style × door rather than per size; no order minimums, lead times or freight costs; the AI memo rephrases figures computed by the code and should be reviewed before sharing.
+Simulated data; replenishment computed per style × door rather than per size; files with one column per week are not handled yet; no order minimums, lead times or freight costs; the AI memo rephrases figures computed by the code and should be reviewed before sharing.
