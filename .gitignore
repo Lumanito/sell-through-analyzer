@@ -1,0 +1,11 @@
+# Secrets : la clé API ne doit jamais être publiée
+.env
+
+# Environnement Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Système
+.DS_Store
