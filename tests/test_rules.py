@@ -45,8 +45,8 @@ def test_pas_de_reassort_si_la_reference_se_vend_mal():
 
 
 def test_limite_ia_desactivee_par_defaut(monkeypatch):
-    from src.ai_report import limite_rapports_par_jour
-    monkeypatch.delenv("LIMITE_RAPPORTS_IA_PAR_JOUR", raising=False)
-    assert limite_rapports_par_jour() == 0
-    monkeypatch.setenv("LIMITE_RAPPORTS_IA_PAR_JOUR", "pas un nombre")
-    assert limite_rapports_par_jour() == 0
+    from src.ai_report import limite_appels_ia_par_jour
+    monkeypatch.delenv("LIMITE_APPELS_IA_PAR_JOUR", raising=False)
+    assert limite_appels_ia_par_jour() == 0
+    monkeypatch.setenv("LIMITE_APPELS_IA_PAR_JOUR", "pas un nombre")
+    assert limite_appels_ia_par_jour() == 0

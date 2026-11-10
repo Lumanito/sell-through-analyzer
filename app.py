@@ -3,20 +3,22 @@
 Lancer : streamlit run app.py
 """
 
+import io
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from datetime import date
-
 from src.ai_report import (cle_api_disponible, construire_contexte, generer_rapport,
-                            limite_rapports_par_jour)
-from src.config import COUVERTURE_MAX, ParametresRegles
+                            limite_appels_ia_par_jour)
+from src.config import COLONNES_ATTENDUES, COUVERTURE_MAX, ParametresRegles
 from src.data import charger_csv, generer_donnees
 from src.export import construire_rapport_markdown, markdown_vers_pdf
 from src.kpis import kpis_globaux, kpis_par, top_flop, ventes_hebdomadaires
+from src.mapping import (AUCUNE, COLONNES_OBLIGATOIRES, LIBELLES, appliquer_correspondance, lire_fichier,
+                         proposer_correspondance_auto, proposer_correspondance_ia)
 from src.rules import generer_recommandations
 
 DOSSIER_DATA = Path(__file__).parent / "data"
@@ -39,9 +41,102 @@ def titre(texte: str):
 # Chargement des données
 # ---------------------------------------------------------------------------
 @st.cache_resource
-def compteur_rapports_ia() -> dict:
+def compteur_appels_ia() -> dict:
     """Compteur partagé par tous les visiteurs de l'app (remis à zéro chaque jour)."""
     return {"jour": date.today(), "nombre": 0}
+
+
+def appels_ia_restants() -> int:
+    """Appels IA encore autorisés aujourd'hui (0 si l'IA est désactivée ou sans clé)."""
+    if not cle_api_disponible():
+        return 0
+    compteur = compteur_appels_ia()
+    if compteur["jour"] != date.today():  # nouveau jour : on repart de zéro
+        compteur.update(jour=date.today(), nombre=0)
+    return max(0, limite_appels_ia_par_jour() - compteur["nombre"])
+
+
+def reserver_appel_ia() -> bool:
+    """Compte un appel avant de le faire (un double-clic ne contourne pas la limite).
+    Renvoie False si la limite est atteinte, y compris à cause d'un autre visiteur."""
+    if appels_ia_restants() <= 0:
+        return False
+    compteur_appels_ia()["nombre"] += 1
+    return True
+
+
+@st.cache_data(show_spinner=False)
+def lire_fichier_en_cache(contenu: bytes, nom_fichier: str) -> pd.DataFrame:
+    return lire_fichier(io.BytesIO(contenu), nom_fichier)
+
+
+def preparer_fichier_importe(fichier) -> pd.DataFrame:
+    """Transforme le fichier de l'utilisateur au format de l'outil.
+
+    Un CSV déjà au format du modèle est utilisé tel quel. Sinon, l'utilisateur
+    valide la correspondance des colonnes, proposée par synonymes ou par l'IA.
+    """
+    if fichier.name.lower().endswith(".csv"):
+        try:
+            return charger_csv(io.BytesIO(fichier.getvalue()))
+        except (ValueError, pd.errors.ParserError, UnicodeDecodeError):
+            pass  # pas au format exact : on passe à la correspondance
+
+    try:
+        brut = lire_fichier_en_cache(fichier.getvalue(), fichier.name)
+    except Exception as erreur:  # fichier illisible : on explique plutôt que de planter
+        st.error(f"Impossible de lire ce fichier ({erreur}).")
+        st.stop()
+    colonnes_fichier = list(brut.columns)
+    prefixe = f"correspondance_{fichier.name}_{fichier.size}"  # une correspondance par fichier
+
+    # Première ouverture : proposition par synonymes, stockée dans les menus déroulants
+    if f"{prefixe}_initialise" not in st.session_state:
+        proposition = proposer_correspondance_auto(colonnes_fichier)
+        for cible in COLONNES_ATTENDUES:
+            st.session_state[f"{prefixe}_{cible}"] = proposition.get(cible, AUCUNE)
+        st.session_state[f"{prefixe}_initialise"] = True
+
+    with st.expander("Correspondance des colonnes de ton fichier", expanded=True):
+        st.caption(f"{len(brut)} lignes lues. Vérifie à quelle colonne de ton fichier correspond chaque donnée. "
+                   "Les champs marqués * sont indispensables ; pour le reste, des valeurs par défaut sont utilisées.")
+        st.dataframe(brut.head(5), hide_index=True, width="stretch")
+
+        restants = appels_ia_restants()
+        if st.button("Proposer la correspondance avec l'IA", disabled=restants == 0,
+                     help="Seuls les noms de colonnes et 5 lignes d'exemple sont envoyés à Claude."
+                     if restants else "IA désactivée sur cette version (ou limite du jour atteinte)."):
+            if reserver_appel_ia():
+                with st.spinner("Analyse des colonnes..."):
+                    try:
+                        proposition = proposer_correspondance_ia(brut)
+                        for cible in COLONNES_ATTENDUES:
+                            st.session_state[f"{prefixe}_{cible}"] = proposition.get(cible, AUCUNE)
+                        st.rerun()
+                    except RuntimeError as erreur:
+                        st.error(str(erreur))
+            else:
+                st.warning("Limite d'appels IA atteinte pour aujourd'hui.")
+
+        colonnes_ecran = st.columns(3)
+        correspondance = {}
+        for numero, cible in enumerate(COLONNES_ATTENDUES):
+            libelle = LIBELLES[cible] + (" *" if cible in COLONNES_OBLIGATOIRES else "")
+            choix = colonnes_ecran[numero % 3].selectbox(libelle, [AUCUNE] + colonnes_fichier, key=f"{prefixe}_{cible}")
+            if choix != AUCUNE:
+                correspondance[cible] = choix
+
+    try:
+        donnees_converties, avertissements = appliquer_correspondance(brut, correspondance)
+    except ValueError as erreur:
+        st.error(str(erreur))
+        st.stop()
+    st.success(f"Fichier converti : {len(donnees_converties)} lignes, "
+               f"{donnees_converties['reference'].nunique()} références, "
+               f"{donnees_converties['point_de_vente'].nunique()} points de vente.")
+    if avertissements:
+        st.warning("Hypothèses utilisées :\n" + "\n".join(f"- {a}" for a in avertissements))
+    return donnees_converties
 
 
 @st.cache_data(show_spinner=False, max_entries=50)
@@ -116,22 +211,24 @@ def tableau_kpis(tableau: pd.DataFrame, colonnes: list[str]):
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.header("Données")
-    source = st.radio("Source", ["Jeu fictif Fjelda", "Importer mon CSV"], label_visibility="collapsed")
-    if source == "Importer mon CSV":
-        fichier = st.file_uploader("Fichier CSV au format du modèle", type="csv")
+    source = st.radio("Source", ["Jeu fictif Fjelda", "Importer mon fichier"], label_visibility="collapsed")
+    if source == "Importer mon fichier":
+        fichier = st.file_uploader("Fichier CSV ou Excel", type=["csv", "xlsx"],
+                                   help="Format libre : les colonnes sont reconnues ensuite.")
         st.download_button("Télécharger le modèle vide", (DOSSIER_DATA / "template.csv").read_bytes(),
                            file_name="modele_sell_through.csv", mime="text/csv")
+        st.download_button("Exemple d'export Excel désordonné", (DOSSIER_DATA / "exemple_export_desordonne.xlsx").read_bytes(),
+                           file_name="exemple_export_desordonne.xlsx",
+                           help="Titre au-dessus du tableau, colonnes aux noms différents, dates au lieu de semaines, "
+                                "prix au format « 95,00 € », ligne de total : de quoi tester l'import.")
         if fichier is None:
             st.info("Charge un fichier pour lancer l'analyse.")
             st.stop()
-        try:
-            donnees = charger_csv(fichier)
-        except ValueError as erreur:
-            st.error(str(erreur))
-            st.stop()
-    else:
-        donnees = charger_jeu_exemple()
 
+# La correspondance des colonnes s'affiche dans la zone principale (plus de place)
+donnees = preparer_fichier_importe(fichier) if source == "Importer mon fichier" else charger_jeu_exemple()
+
+with st.sidebar:
     st.header("Filtres")
     categories = st.multiselect("Catégorie", sorted(donnees["categorie"].unique()), placeholder="Toutes")
     types_pdv = st.multiselect("Type de point de vente", sorted(donnees["type_pdv"].unique()),
@@ -316,24 +413,18 @@ with onglets[4]:
     if "texte_ia" not in st.session_state:
         st.session_state.texte_ia = None
 
-    compteur = compteur_rapports_ia()
-    if compteur["jour"] != date.today():  # nouveau jour : on repart de zéro
-        compteur.update(jour=date.today(), nombre=0)
-    limite = limite_rapports_par_jour()
-
-    if cle_api_disponible() and limite == 0:
+    if cle_api_disponible() and limite_appels_ia_par_jour() == 0:
         st.info("Synthèse IA désactivée sur cette version de démonstration. "
                 "Le rapport ci-dessous reste exportable avec les recommandations par règles.")
     elif cle_api_disponible():
-        restants = max(0, limite - compteur["nombre"])
+        restants = appels_ia_restants()
         st.caption("Seuls les KPIs agrégés et les recommandations sont envoyés à Claude, jamais les données brutes. "
-                   f"Synthèses restantes aujourd'hui : {restants}.")
+                   f"Appels IA restants aujourd'hui : {restants}.")
         if st.button("Générer la synthèse IA", type="primary", disabled=restants == 0):
-            # nouvelle vérification au clic : un autre visiteur a pu utiliser la dernière synthèse entre-temps
-            if compteur["nombre"] >= limite:
-                st.warning("Limite de synthèses IA atteinte pour aujourd'hui.")
+            # nouvelle vérification au clic : un autre visiteur a pu utiliser le dernier appel entre-temps
+            if not reserver_appel_ia():
+                st.warning("Limite d'appels IA atteinte pour aujourd'hui.")
                 st.stop()
-            compteur["nombre"] += 1  # compté avant l'appel : un double-clic ne contourne pas la limite
             with st.spinner("Rédaction de la note en cours..."):
                 try:
                     st.session_state.texte_ia = rapport_ia_en_cache(

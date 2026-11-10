@@ -19,16 +19,17 @@ load_dotenv()  # charge les variables du fichier .env s'il existe
 MODELE_PAR_DEFAUT = "claude-opus-5-5"
 
 
-def limite_rapports_par_jour() -> int:
-    """Nombre maximum de synthèses IA par jour, tous visiteurs confondus.
+def limite_appels_ia_par_jour() -> int:
+    """Nombre maximum d'appels à l'IA par jour (synthèses et imports), tous visiteurs confondus.
 
-    0 (valeur par défaut) = synthèse IA désactivée pour tout le monde,
+    0 (valeur par défaut) = IA désactivée pour tout le monde,
     même si une clé API est configurée. Protège le crédit API sur l'app publique.
     """
     try:
-        return max(0, int(os.getenv("LIMITE_RAPPORTS_IA_PAR_JOUR", "0")))
+        return max(0, int(os.getenv("LIMITE_APPELS_IA_PAR_JOUR", "0")))
     except ValueError:
         return 0
+
 
 CONSIGNES = """Tu es analyste wholesale senior dans une marque de mode outdoor / lifestyle.
 Tu reçois les KPIs de sell-through d'une collection chez ses revendeurs
@@ -96,23 +97,27 @@ def construire_contexte(donnees: pd.DataFrame, recommandations: dict[str, pd.Dat
     return json.dumps(resume, ensure_ascii=False, indent=1, default=str)
 
 
-def generer_rapport(contexte: str, modele: str | None = None) -> str:
-    """Appelle l'API Claude et renvoie la note en Markdown.
+def appeler_claude(consignes: str, contenu: str, max_tokens: int = 4000, format_json: dict | None = None) -> str:
+    """Envoie une demande à Claude et renvoie le texte de la réponse.
 
-    Lève une RuntimeError avec un message lisible en cas de problème
-    (clé invalide, quota, réseau...).
+    format_json : schéma JSON imposé à la réponse (utilisé pour la correspondance des colonnes).
+    Lève une RuntimeError avec un message lisible en cas de problème (clé invalide, quota, réseau...).
     """
     if not cle_api_disponible():
         raise RuntimeError("Aucune clé API : ajoute ANTHROPIC_API_KEY dans le fichier .env.")
 
+    options_sortie = {"effort": "medium"}
+    if format_json:
+        options_sortie["format"] = format_json
+
     client = anthropic.Anthropic()  # lit ANTHROPIC_API_KEY automatiquement
     try:
         reponse = client.beta.messages.create(
-            model=modele or os.getenv("CLAUDE_MODEL", MODELE_PAR_DEFAUT),
-            max_tokens=4000,
-            system=CONSIGNES,
-            messages=[{"role": "user", "content": f"KPIs de la collection (JSON) :\n{contexte}"}],
-            output_config={"effort": "medium"},
+            model=os.getenv("CLAUDE_MODEL", MODELE_PAR_DEFAUT),
+            max_tokens=max_tokens,
+            system=consignes,
+            messages=[{"role": "user", "content": contenu}],
+            output_config=options_sortie,
             # Si le modèle refuse la demande, l'API la relance sur un autre modèle
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default",
@@ -127,6 +132,10 @@ def generer_rapport(contexte: str, modele: str | None = None) -> str:
         raise RuntimeError(f"Erreur de l'API Claude ({erreur.status_code}) : {erreur.message}") from erreur
 
     if reponse.stop_reason == "refusal":
-        raise RuntimeError("Le modèle a refusé de générer ce rapport.")
-    texte = "".join(bloc.text for bloc in reponse.content if bloc.type == "text")
-    return texte.strip()
+        raise RuntimeError("Le modèle a refusé de traiter cette demande.")
+    return "".join(bloc.text for bloc in reponse.content if bloc.type == "text").strip()
+
+
+def generer_rapport(contexte: str) -> str:
+    """Rédige la note au directeur commercial à partir du résumé chiffré."""
+    return appeler_claude(CONSIGNES, f"KPIs de la collection (JSON) :\n{contexte}")
