@@ -9,7 +9,10 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from src.ai_report import cle_api_disponible, construire_contexte, generer_rapport
+from datetime import date
+
+from src.ai_report import (cle_api_disponible, construire_contexte, generer_rapport,
+                            limite_rapports_par_jour)
 from src.config import COUVERTURE_MAX, ParametresRegles
 from src.data import charger_csv, generer_donnees
 from src.export import construire_rapport_markdown, markdown_vers_pdf
@@ -35,6 +38,12 @@ def titre(texte: str):
 # ---------------------------------------------------------------------------
 # Chargement des données
 # ---------------------------------------------------------------------------
+@st.cache_resource
+def compteur_rapports_ia() -> dict:
+    """Compteur partagé par tous les visiteurs de l'app (remis à zéro chaque jour)."""
+    return {"jour": date.today(), "nombre": 0}
+
+
 @st.cache_data(show_spinner=False, max_entries=50)
 def rapport_ia_en_cache(contexte: str) -> str:
     """Même contexte (mêmes filtres) = même note : pas de nouvel appel payant à l'API."""
@@ -307,9 +316,24 @@ with onglets[4]:
     if "texte_ia" not in st.session_state:
         st.session_state.texte_ia = None
 
-    if cle_api_disponible():
-        st.caption("Seuls les KPIs agrégés et les recommandations sont envoyés à Claude, jamais les données brutes.")
-        if st.button("Générer la synthèse IA", type="primary"):
+    compteur = compteur_rapports_ia()
+    if compteur["jour"] != date.today():  # nouveau jour : on repart de zéro
+        compteur.update(jour=date.today(), nombre=0)
+    limite = limite_rapports_par_jour()
+
+    if cle_api_disponible() and limite == 0:
+        st.info("Synthèse IA désactivée sur cette version de démonstration. "
+                "Le rapport ci-dessous reste exportable avec les recommandations par règles.")
+    elif cle_api_disponible():
+        restants = max(0, limite - compteur["nombre"])
+        st.caption("Seuls les KPIs agrégés et les recommandations sont envoyés à Claude, jamais les données brutes. "
+                   f"Synthèses restantes aujourd'hui : {restants}.")
+        if st.button("Générer la synthèse IA", type="primary", disabled=restants == 0):
+            # nouvelle vérification au clic : un autre visiteur a pu utiliser la dernière synthèse entre-temps
+            if compteur["nombre"] >= limite:
+                st.warning("Limite de synthèses IA atteinte pour aujourd'hui.")
+                st.stop()
+            compteur["nombre"] += 1  # compté avant l'appel : un double-clic ne contourne pas la limite
             with st.spinner("Rédaction de la note en cours..."):
                 try:
                     st.session_state.texte_ia = rapport_ia_en_cache(

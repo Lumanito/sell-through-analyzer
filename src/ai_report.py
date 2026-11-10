@@ -18,6 +18,18 @@ load_dotenv()  # charge les variables du fichier .env s'il existe
 
 MODELE_PAR_DEFAUT = "claude-opus-5-5"
 
+
+def limite_rapports_par_jour() -> int:
+    """Nombre maximum de synthèses IA par jour, tous visiteurs confondus.
+
+    0 (valeur par défaut) = synthèse IA désactivée pour tout le monde,
+    même si une clé API est configurée. Protège le crédit API sur l'app publique.
+    """
+    try:
+        return max(0, int(os.getenv("LIMITE_RAPPORTS_IA_PAR_JOUR", "0")))
+    except ValueError:
+        return 0
+
 CONSIGNES = """Tu es analyste wholesale senior dans une marque de mode outdoor / lifestyle.
 Tu reçois les KPIs de sell-through d'une collection chez ses revendeurs
 (multimarques, grands magasins, e-tailers) et les recommandations calculées par des règles.

@@ -42,3 +42,11 @@ def test_pas_de_reassort_si_la_reference_se_vend_mal():
     kpis = pd.DataFrame([kpi("Boutique", 0.3, 1.0, 1, 1.0)])
     reassorts = proposer_reassorts(kpis, pd.DataFrame(columns=["reference", "vers", "quantite"]), ParametresRegles())
     assert reassorts.empty
+
+
+def test_limite_ia_desactivee_par_defaut(monkeypatch):
+    from src.ai_report import limite_rapports_par_jour
+    monkeypatch.delenv("LIMITE_RAPPORTS_IA_PAR_JOUR", raising=False)
+    assert limite_rapports_par_jour() == 0
+    monkeypatch.setenv("LIMITE_RAPPORTS_IA_PAR_JOUR", "pas un nombre")
+    assert limite_rapports_par_jour() == 0
