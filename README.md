@@ -2,6 +2,8 @@
 
 **🇫🇷 Français** · [🇬🇧 English](#-english)
 
+### ▶️ [Essayer l'application en ligne / Try the live app](https://sell-through-analyzer.streamlit.app)
+
 > ⚠️ **Toutes les données de ce projet sont fictives.** La marque « Fjelda », ses produits et ses revendeurs sont inventés. Le jeu de données est généré par simulation (`src/data.py`).
 
 ![Vue d'ensemble](docs/screenshots/vue_ensemble.png)
