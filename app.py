@@ -35,6 +35,12 @@ def titre(texte: str):
 # ---------------------------------------------------------------------------
 # Chargement des données
 # ---------------------------------------------------------------------------
+@st.cache_data(show_spinner=False, max_entries=50)
+def rapport_ia_en_cache(contexte: str) -> str:
+    """Même contexte (mêmes filtres) = même note : pas de nouvel appel payant à l'API."""
+    return generer_rapport(contexte)
+
+
 @st.cache_data
 def charger_jeu_exemple() -> pd.DataFrame:
     """Jeu fictif fourni ; régénéré s'il est absent."""
@@ -306,7 +312,8 @@ with onglets[4]:
         if st.button("Générer la synthèse IA", type="primary"):
             with st.spinner("Rédaction de la note en cours..."):
                 try:
-                    st.session_state.texte_ia = generer_rapport(construire_contexte(donnees_filtrees, recommandations))
+                    st.session_state.texte_ia = rapport_ia_en_cache(
+                        construire_contexte(donnees_filtrees, recommandations))
                 except RuntimeError as erreur:
                     st.error(str(erreur))
     else:
